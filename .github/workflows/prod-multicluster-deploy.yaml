@@ -1,0 +1,127 @@
+name: prod-multicluster-deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io/nusantaramart
+  IMAGE_NAME: payment-service
+  KUBE_VERSION: "1.29"
+
+jobs:
+  test-build-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unit Test
+        run: |
+          echo "Run unit tests here"
+
+      - name: Build Image
+        run: |
+          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
+          docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+
+      - name: Image Scan (Trivy)
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+
+  deploy-bdg-canary:
+    needs: test-build-scan
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBE_VERSION }}
+
+      - name: Configure kubeconfig Bandung
+        run: echo "${{ secrets.KUBECONFIG_BANDUNG }}" | base64 -d > kubeconfig
+
+      - name: Deploy Canary to Bandung
+        run: |
+          KUBECONFIG=kubeconfig \
+          helm upgrade --install payment k8s/payment \
+            --set image.tag=${{ github.sha }} \
+            --set canary.enabled=true
+
+  deploy-sby-canary:
+    needs: deploy-bdg-canary
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBE_VERSION }}
+
+      - name: Configure kubeconfig Surabaya
+        run: echo "${{ secrets.KUBECONFIG_SURABAYA }}" | base64 -d > kubeconfig
+
+      - name: Deploy Canary to Surabaya
+        run: |
+          KUBECONFIG=kubeconfig \
+          helm upgrade --install payment k8s/payment \
+            --set image.tag=${{ github.sha }} \
+            --set canary.enabled=true
+
+  approve-main:
+    needs: deploy-sby-canary
+    runs-on: ubuntu-latest
+    environment:
+      name: production-main
+      url: https://status.nusantaramart.id
+    steps:
+      - name: Manual Approval Gate
+        run: echo "Awaiting approval to deploy Jakarta"
+
+  deploy-jkt:
+    needs: approve-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBE_VERSION }}
+
+      - name: Configure kubeconfig Jakarta
+        run: echo "${{ secrets.KUBECONFIG_JAKARTA }}" | base64 -d > kubeconfig
+
+      - name: Deploy Full Release to Jakarta
+        run: |
+          KUBECONFIG=kubeconfig \
+          helm upgrade --install payment k8s/payment \
+            --set image.tag=${{ github.sha }} \
+            --set canary.enabled=false
+
+  rollback-on-failure:
+    if: failure()
+    needs: [deploy-bdg-canary, deploy-sby-canary, deploy-jkt]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rollback via Helm
+        run: |
+          echo "Trigger helm rollback or traffic shift via gateway"

@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  php-fpm:
+    build: ./app
+    container_name: demo-php
+  nginx:
+    build: ./nginx
+    ports:
+      - "8080:80"
+    depends_on:
+      - php-fpm
+    volumes:
+      - ./app/public:/var/www/html:ro

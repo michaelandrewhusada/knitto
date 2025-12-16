@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-fpm
+  namespace: nusantaramart
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: php-fpm }
+  template:
+    metadata: { labels: { app: php-fpm } }
+    spec:
+      containers:
+      - name: php-fpm
+        image: nusantaramart/php-fpm:demo
+        ports: [{containerPort: 9000}]
